@@ -3816,7 +3816,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_PREFILL_ASSISTANT"));
     add_opt(common_arg(
         {"-sps", "--slot-prompt-similarity"}, "SIMILARITY",
-        string_format("how much the prompt of a request must match the prompt of a slot in order to use that slot (default: %.2f, 0.0 = disabled)\n", params.slot_prompt_similarity),
+        "deprecated, ignored: slot reuse is identity-based (a request must fully re-send the cached prompt to reuse a slot)\n",
         [](common_params & params, const std::string & value) {
             params.slot_prompt_similarity = std::stof(value);
         }
