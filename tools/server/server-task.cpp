@@ -1796,20 +1796,15 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
 }
 
 // find the parked state that the request fully re-sends (identity match)
-static std::list<server_prompt_cache_state>::iterator find_best_identity_it(server_prompt_cache & cache, const server_tokens & tokens_new) {
-    auto it_best = cache.states.end();
+std::list<server_prompt_cache_state>::iterator server_prompt_cache::find_best_identity_it(const server_tokens & tokens_new) {
+    auto it_best = states.end();
     size_t best_len = 0;
 
-    for (auto it = cache.states.begin(); it != cache.states.end(); ++it) {
-        if (it->prompt.tokens.empty()) {
-            continue;
-        }
+    for (auto it = states.begin(); it != states.end(); ++it) {
+        const size_t lcp_len = it->prompt.tokens.get_common_prefix(tokens_new);
 
-        const size_t lcp_len = (size_t) it->prompt.tokens.get_common_prefix(tokens_new);
-
-        // a state is reusable only if it is fully re-sent by the request;
-        // one that merely shares a long system/tool prefix belongs to a
-        // different conversation and must never be adopted
+        // reuse a state only if the request fully re-sends it; a shared system
+        // prefix alone belongs to a different conversation
         if (lcp_len != it->prompt.tokens.size()) {
             continue;
         }
@@ -1824,7 +1819,7 @@ static std::list<server_prompt_cache_state>::iterator find_best_identity_it(serv
 }
 
 server_prompt_cache_state * server_prompt_cache::find_best_identity(const server_tokens & tokens_new) {
-    auto it_best = find_best_identity_it(*this, tokens_new);
+    auto it_best = find_best_identity_it(tokens_new);
 
     if (it_best == states.end()) {
         return nullptr;
@@ -1835,12 +1830,12 @@ server_prompt_cache_state * server_prompt_cache::find_best_identity(const server
 
 bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
     // keep in place whatever slot content the request fully re-sends
-    const size_t lcp_in_slot = prompt.tokens.size() > 0 ? (size_t) prompt.tokens.get_common_prefix(tokens_new) : 0;
+    const size_t lcp_in_slot = prompt.tokens.get_common_prefix(tokens_new);
     const size_t keep_in_slot = (lcp_in_slot == prompt.tokens.size()) ? lcp_in_slot : 0;
 
     SRV_TRC(" - looking for better prompt, in-slot reusable = %zu tokens\n", keep_in_slot);
 
-    auto it_best = find_best_identity_it(*this, tokens_new);
+    auto it_best = find_best_identity_it(tokens_new);
 
     if (it_best == states.end() || it_best->prompt.tokens.size() <= keep_in_slot) {
         // nothing strictly better than the slot content; launch trims by LCP
