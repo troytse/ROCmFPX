@@ -1,6 +1,7 @@
 #ifdef MUL_MAT_ID
 shared u16vec2 row_ids[BN];
 uint _ne1;
+uint _tile_count;
 
 #ifdef MUL_MAT_ID_USE_SUBGROUPS
 shared uvec4 ballots_sh[NUM_WARPS];

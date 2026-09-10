@@ -187,6 +187,8 @@ void main() {
 
     // Workgroup has no work
     if (ic * BN >= _ne1) return;
+
+    _tile_count = min(BN, _ne1 - ic * BN);
 #endif
 
 #ifdef MUL_MAT_ID
@@ -240,7 +242,11 @@ void main() {
             const uint iqs = loadr_b;
 
             [[unroll]] for (uint k_step = 0; k_step < BK_STEP; k_step++) {
-                block_b_to_shmem(k_step * BN + buf_ib, ib + k_step, iqs, block + k_step * BK < end_k);
+                bool in_bounds = block + k_step * BK < end_k;
+#ifdef MUL_MAT_ID
+                in_bounds = in_bounds && buf_ib < _tile_count;
+#endif
+                block_b_to_shmem(k_step * BN + buf_ib, ib + k_step, iqs, in_bounds);
             }
         }
 
