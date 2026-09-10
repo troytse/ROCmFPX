@@ -4959,9 +4959,8 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
             CREATE_MM(GGML_TYPE_Q4_0_ROCMFP4, pipeline_dequant_mul_mat_mat_id[GGML_TYPE_Q4_0_ROCMFP4].f32acc, matmul_id_subgroup_rocmfp4_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id);
             CREATE_MM(GGML_TYPE_Q4_0_ROCMFP4_FAST, pipeline_dequant_mul_mat_mat_id[GGML_TYPE_Q4_0_ROCMFP4_FAST].f32acc, matmul_id_subgroup_rocmfp4_fast_f32, , mmq_wg_denoms, warptile_mmq, vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id);
 
-            // opt-in integer-dot path: CREATE_MMQ above only runs without coopmat support
-            const char * fp4_mmq_env = getenv("GGML_VK_ROCMFP4_MMQ");
-            if (device->integer_dot_product && fp4_mmq_env != nullptr && strcmp(fp4_mmq_env, "1") == 0) {
+            // integer-dot path, on by default: CREATE_MMQ above only runs without coopmat support
+            if (device->integer_dot_product) {
                 const bool id_ok = device->subgroup_ballot && device->subgroup_require_full_support && subgroup_min_size_16;
 
 #define CREATE_MMQ_FP4(TYPE, NAMELC) \
@@ -4981,8 +4980,9 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
 
                 CREATE_MMQ_FP4(GGML_TYPE_Q4_0_ROCMFP4,      matmul_rocmfp4_q8_1)
                 CREATE_MMQ_FP4(GGML_TYPE_Q4_0_ROCMFP4_FAST, matmul_rocmfp4_fast_q8_1)
+                // GGML_VK_ROCMFP4_MMQ_ID=0 keeps the MoE matmuls on the CM1 path, for bisecting
                 const char * fp4_mmq_id_env = getenv("GGML_VK_ROCMFP4_MMQ_ID");
-                if (fp4_mmq_id_env == nullptr || strcmp(fp4_mmq_id_env, "1") == 0) {
+                if (fp4_mmq_id_env == nullptr || strcmp(fp4_mmq_id_env, "0") != 0) {
                     CREATE_MMQ_FP4_ID(GGML_TYPE_Q4_0_ROCMFP4,      matmul_id_subgroup_rocmfp4_q8_1)
                     CREATE_MMQ_FP4_ID(GGML_TYPE_Q4_0_ROCMFP4_FAST, matmul_id_subgroup_rocmfp4_fast_q8_1)
                 }
@@ -9264,14 +9264,6 @@ static vk_pipeline ggml_vk_guess_matmul_id_pipeline(ggml_backend_vk_context * ct
     const bool mm_l = is_q8_1 ? ctx->device->mul_mat_id_l_int[src0_type] : ctx->device->mul_mat_id_l[src0_type];
     const bool mm_m = is_q8_1 ? ctx->device->mul_mat_id_m_int[src0_type] : ctx->device->mul_mat_id_m[src0_type];
     const bool mm_s = is_q8_1 ? ctx->device->mul_mat_id_s_int[src0_type] : ctx->device->mul_mat_id_s[src0_type];
-
-    // diagnostic override: force id-path tile size (s/m/l), fall back to heuristic below
-    const char * mmqid_tile_env = getenv("GGML_VK_ROCMFP4_MMQID_TILE");
-    if (mmqid_tile_env != nullptr && mmp) {
-        if (mmqid_tile_env[0] == 's' && mm_s && mmp->s) return aligned ? mmp->a_s : mmp->s;
-        if (mmqid_tile_env[0] == 'm' && mm_m && mmp->m) return aligned ? mmp->a_m : mmp->m;
-        if (mmqid_tile_env[0] == 'l' && mm_l && mmp->l) return aligned ? mmp->a_l : mmp->l;
-    }
 
     if (ctx->device->coopmat2) {
         // Use large shader when the N dimension is greater than the medium shader's tile size
