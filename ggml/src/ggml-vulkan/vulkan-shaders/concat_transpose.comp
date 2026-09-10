@@ -1,12 +1,8 @@
 #version 450
 
-// Tiled copy for GGML_OP_CONCAT along dim 0 when src1 is a transposed view: src1 is
-// contiguous along dim 1 and strided along dim 0, so the generic element-wise shader
-// reads a full cache line per element. This stages a 32 x 32 tile in shared memory and
-// transposes it, so that both the src1 load and the dst store are coalesced.
+// Tiled copy for GGML_OP_CONCAT along dim 0 when src1 is a transposed view, that is contiguous along dim 1 and strided along dim 0. The generic element-wise shader walks the destination, so every 4 byte read pulls a whole cache line. This stages a 32x32 tile in shared memory and transposes it, so both the src1 load and the dst store stay coalesced. Same tile trick as copy_transpose.comp.
 //
-// Layout: src1 is [T, C, S] with nb[1] == sizeof(float) and nb[0] == C * sizeof(float);
-// src0 is contiguous [P, C, S]; dst is [P + T, C, S] with nb[0] == sizeof(float).
+// src0 is contiguous [P, C, S], src1 is [T, C, S] with nb[1] == sizeof(float), dst is [P + T, C, S] with nb[0] == sizeof(float).
 
 layout(local_size_x = 32, local_size_y = 8, local_size_z = 1) in;
 

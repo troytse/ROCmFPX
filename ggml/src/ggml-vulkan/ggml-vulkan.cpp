@@ -13449,11 +13449,13 @@ static void ggml_vk_opt_step_sgd(ggml_backend_vk_context * ctx, vk_context& subc
 // the generic element-wise shader reads one cache line per element for it
 static bool ggml_vk_concat_transpose_supported(const ggml_backend_vk_context * ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst) {
     // src1 must be the transposed case: contiguous along dim 1, strided along dim 0
+    // src1->ne[0] > 0 because the src0 rows are copied by the y == 0 workgroups only
     return dst->type == GGML_TYPE_F32 &&
            ggml_get_op_params_i32(dst, 0) == 0 &&
            ggml_is_contiguous(src0) &&
            dst->nb[0] == (int64_t) sizeof(float) &&
            src0->ne[3] == 1 && src1->ne[3] == 1 && dst->ne[3] == 1 &&
+           src1->ne[0] > 0 &&
            src1->nb[0] != (int64_t) sizeof(float) &&
            src1->nb[1] == (int64_t) sizeof(float) &&
            // ggml_vk_tensor_subbuffer() requires this, same as the generic op path
