@@ -3974,29 +3974,6 @@ static vk_fa_tuning_params get_fa_tuning_params(const vk_device& device, uint32_
         throw std::runtime_error("unsupported FaCodePath");
     }
 
-    // diagnostic override: force FA tile, e.g. GGML_VK_ROCMFP4_FA_TILE=64x32
-    const char * fa_tile_env = getenv("GGML_VK_ROCMFP4_FA_TILE");
-    if (fa_tile_env != nullptr) {
-        unsigned br = 0, bc = 0;
-        if (sscanf(fa_tile_env, "%ux%u", &br, &bc) == 2 && br > 0 && bc > 0) {
-            // coopmat1 needs Br <= MatBr (16), Bc == MatBc (16) * row_split and Bc % subgroup_size == 0
-            if (result.path == FA_COOPMAT1 && (br > 16u || bc % 16u != 0u || bc % result.subgroup_size != 0u)) {
-                static bool fa_tile_warned = false;
-                if (!fa_tile_warned) {
-                    fa_tile_warned = true;
-                    GGML_LOG_WARN("ggml_vulkan: GGML_VK_ROCMFP4_FA_TILE=%s ignored, coopmat1 needs Br <= 16 and Bc a multiple of 16 and of the subgroup size (%u)\n",
-                                  fa_tile_env, result.subgroup_size);
-                }
-            } else {
-                result.block_rows = br;
-                result.block_cols = bc;
-                if (result.path == FA_COOPMAT1) {
-                    result.row_split = bc / 16u;
-                    result.workgroup_size = result.row_split * result.subgroup_size;
-                }
-            }
-        }
-    }
     if (getenv("GGML_VK_ROCMFP4_PROFILE")) {
         fprintf(stderr, "PROF fa path=%d Br=%u Bc=%u\n", (int)result.path, result.block_rows, result.block_cols);
     }
