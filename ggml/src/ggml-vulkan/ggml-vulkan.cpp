@@ -978,6 +978,7 @@ struct vk_device_struct {
     vk_pipeline pipeline_add_id_f32;
 
     vk_pipeline pipeline_concat_i8, pipeline_concat_i16, pipeline_concat_i32, pipeline_concat_i64;
+    vk_pipeline pipeline_concat_transpose_f32;
     vk_pipeline pipeline_upscale_nearest_f32, pipeline_upscale_bilinear_f32, pipeline_upscale_bicubic_f32, pipeline_upscale_bilinear_antialias_f32;
     vk_pipeline pipeline_scale_f32;
     vk_pipeline pipeline_log[2];
@@ -1931,6 +1932,12 @@ struct vk_op_gated_delta_net_push_constants {
     uint32_t neq1, rq3;
     float scale;
     uint32_t K;
+};
+
+struct vk_op_concat_transpose_push_constants {
+    uint32_t C, T, P, S;
+    uint32_t nb10, nb11, nb12; // src1 strides, in elements
+    uint32_t nd1, nd2;         // dst strides, in elements
 };
 
 struct vk_op_ssm_scan_push_constants {
@@ -5911,6 +5918,8 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_concat_i16, "concat_i16", concat_i16_len, concat_i16_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_concat_i32, "concat_i32", concat_i32_len, concat_i32_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_concat_i64, "concat_i64", concat_i64_len, concat_i64_data, "main", 3, sizeof(vk_op_binary_push_constants), {512, 1, 1}, {}, 1);
+
+    ggml_vk_create_pipeline(device, device->pipeline_concat_transpose_f32, "concat_transpose_f32", concat_transpose_f32_len, concat_transpose_f32_data, "main", 3, sizeof(vk_op_concat_transpose_push_constants), {32, 32, 1}, {}, 1);
 
     ggml_vk_create_pipeline(device, device->pipeline_upscale_nearest_f32, "upscale_f32", upscale_f32_len, upscale_f32_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_NEAREST}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_upscale_bilinear_f32, "upscale_f32", upscale_f32_len, upscale_f32_data, "main", 2, sizeof(vk_op_upscale_push_constants), {512, 1, 1}, {GGML_SCALE_MODE_BILINEAR}, 1);
@@ -13459,7 +13468,53 @@ static void ggml_vk_opt_step_sgd(ggml_backend_vk_context * ctx, vk_context& subc
     ggml_vk_op_f32<vk_op_push_constants>(ctx, subctx, src0, src1, src2, nullptr, dst, GGML_OP_OPT_STEP_SGD, { (uint32_t)n, 0, 0.0f, 0.0f, 0.0f, 0.0f });
 }
 
+// concat along dim 0 of a transposed src1 (contiguous along dim 1) is a transpose copy:
+// the generic element-wise shader reads one cache line per element for it
+static bool ggml_vk_concat_transpose_supported(const ggml_backend_vk_context * ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst) {
+    // src1 must be the transposed case: contiguous along dim 1, strided along dim 0
+    return dst->type == GGML_TYPE_F32 &&
+           ggml_get_op_params_i32(dst, 0) == 0 &&
+           ggml_is_contiguous(src0) &&
+           dst->nb[0] == (int64_t) sizeof(float) &&
+           src0->ne[3] == 1 && src1->ne[3] == 1 && dst->ne[3] == 1 &&
+           src1->nb[0] != (int64_t) sizeof(float) &&
+           src1->nb[1] == (int64_t) sizeof(float) &&
+           // ggml_vk_tensor_subbuffer() requires this, same as the generic op path
+           get_misalign_bytes(ctx, src0) == 0 &&
+           get_misalign_bytes(ctx, src1) == 0 &&
+           get_misalign_bytes(ctx, dst)  == 0;
+}
+
+static void ggml_vk_concat_transpose(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    const uint32_t C = (uint32_t) dst->ne[1];
+    const uint32_t T = (uint32_t) src1->ne[0];
+    const uint32_t S = (uint32_t) (dst->ne[2] * dst->ne[3]);
+
+    const vk_op_concat_transpose_push_constants pc = {
+        C, T, (uint32_t) src0->ne[0], S,
+        (uint32_t) (src1->nb[0] / sizeof(float)),
+        (uint32_t) (src1->nb[1] / sizeof(float)),
+        (uint32_t) (src1->nb[2] / sizeof(float)),
+        (uint32_t) (dst->nb[1] / sizeof(float)),
+        (uint32_t) (dst->nb[2] / sizeof(float)),
+    };
+
+    vk_pipeline pipeline = ctx->device->pipeline_concat_transpose_f32;
+    ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
+
+    ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
+        { ggml_vk_tensor_subbuffer(ctx, src0),
+          ggml_vk_tensor_subbuffer(ctx, src1),
+          ggml_vk_tensor_subbuffer(ctx, dst) },
+        pc, { C, T, S });
+}
+
 static void ggml_vk_concat(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    if (ggml_vk_concat_transpose_supported(ctx, src0, src1, dst)) {
+        ggml_vk_concat_transpose(ctx, subctx, src0, src1, dst);
+        return;
+    }
+
     int * op_params = (int *)dst->op_params;
 
     const uint32_t unit_size = ggml_vk_concat_unit_size(dst->type);

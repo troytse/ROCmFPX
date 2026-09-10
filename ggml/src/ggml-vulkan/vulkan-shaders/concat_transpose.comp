@@ -1,0 +1,72 @@
+#version 450
+
+// Tiled copy for GGML_OP_CONCAT along dim 0 when src1 is a transposed view: src1 is
+// contiguous along dim 1 and strided along dim 0, so the generic element-wise shader
+// reads a full cache line per element. This stages a 32 x 32 tile in shared memory and
+// transposes it, so that both the src1 load and the dst store are coalesced.
+//
+// Layout: src1 is [T, C, S] with nb[1] == sizeof(float) and nb[0] == C * sizeof(float);
+// src0 is contiguous [P, C, S]; dst is [P + T, C, S] with nb[0] == sizeof(float).
+
+layout(local_size_x = 32, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform Parameters {
+    uint C;    // dst->ne[1]
+    uint T;    // src1->ne[0]
+    uint P;    // src0->ne[0]
+    uint S;    // dst->ne[2] * dst->ne[3]
+    uint nb10; // src1 strides, in elements: dim0, dim1, dim2
+    uint nb11;
+    uint nb12;
+    uint nd1;  // dst strides, in elements: dim1, dim2
+    uint nd2;
+} p;
+
+layout(binding = 0) readonly  buffer A { float data_a[]; };
+layout(binding = 1) readonly  buffer B { float data_b[]; };
+layout(binding = 2) writeonly buffer D { float data_d[]; };
+
+#define TILE 32
+
+shared float tile[TILE][TILE + 1];
+
+void main() {
+    const uint c0 = gl_WorkGroupID.x * TILE;
+    const uint t0 = gl_WorkGroupID.y * TILE;
+    const uint s  = gl_WorkGroupID.z;
+
+    const uint tx = gl_LocalInvocationID.x;
+    const uint ty = gl_LocalInvocationID.y;
+    const uint c  = c0 + tx;
+
+    const uint dst_base = s * p.nd2;
+
+    // rows [0, P) come from the contiguous src0; P is small (conv kernel size - 1)
+    if (gl_WorkGroupID.y == 0u) {
+        for (uint row = ty; row < p.P; row += 8u) {
+            if (c < p.C) {
+                data_d[dst_base + c * p.nd1 + row] = data_a[s * (p.P * p.C) + c * p.P + row];
+            }
+        }
+    }
+
+    // load the src1 tile along the contiguous dim1, so the reads are coalesced
+    const uint src1_base = s * p.nb12;
+
+    for (uint r = 0; r < TILE; r += 8u) {
+        const uint t = t0 + ty + r;
+        if (t < p.T && c < p.C) {
+            tile[ty + r][tx] = data_b[src1_base + t * p.nb10 + c * p.nb11];
+        }
+    }
+    barrier();
+
+    // store the tile along the contiguous dim0 of dst, so the writes are coalesced
+    for (uint r = 0; r < TILE; r += 8u) {
+        const uint t  = t0 + tx;
+        const uint cc = c0 + ty + r;
+        if (t < p.T && cc < p.C) {
+            data_d[dst_base + cc * p.nd1 + p.P + t] = tile[tx][ty + r];
+        }
+    }
+}
