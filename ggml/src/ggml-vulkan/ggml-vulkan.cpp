@@ -8546,8 +8546,78 @@ template <typename T, uint32_t N> const T *push_constant_data(const std::array<T
     return t.data();
 }
 
+// DIAGNOSTIC: skip dispatches by pipeline name, to weigh op classes. The value
+// of GGML_VK_ROCMFP4_SKIP is a comma separated list of substrings, and a leading
+// '-' excludes. For example "flash_attn" or "matmul,-matmul_id". The skipped
+// dispatch leaves its destination untouched, so results become wrong: use this
+// for timings only. Never skip count_experts, the kernels that follow read the
+// counts it writes to size their own work.
+static bool vk_diag_skip_pipeline(const std::string & name) {
+    struct pattern {
+        std::string text;
+        bool exclude;
+    };
+    static const std::vector<pattern> patterns = [] {
+        std::vector<pattern> result;
+        const char * env = getenv("GGML_VK_ROCMFP4_SKIP");
+        if (env == nullptr) {
+            return result;
+        }
+        const std::string pats = env;
+        for (size_t pos = 0; pos <= pats.size();) {
+            size_t comma = pats.find(',', pos);
+            if (comma == std::string::npos) {
+                comma = pats.size();
+            }
+            std::string pat = pats.substr(pos, comma - pos);
+            const bool exclude = !pat.empty() && pat[0] == '-';
+            if (exclude) {
+                pat = pat.substr(1);
+            }
+            if (!pat.empty()) {
+                result.push_back({ pat, exclude });
+            }
+            if (comma == pats.size()) {
+                break;
+            }
+            pos = comma + 1;
+        }
+        return result;
+    }();
+    if (patterns.empty() || name == "count_experts") {
+        return false;
+    }
+    bool skip = false;
+    for (const auto & p : patterns) {
+        if (name.find(p.text) != std::string::npos) {
+            if (p.exclude) {
+                return false;
+            }
+            skip = true;
+        }
+    }
+    if (skip) {
+        static std::vector<std::string> reported;
+        bool seen = false;
+        for (const auto & r : reported) {
+            if (r == name) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) {
+            reported.push_back(name);
+            fprintf(stderr, "DIAG skip: %s\n", name.c_str());
+        }
+    }
+    return skip;
+}
+
 template <typename T>
 static void ggml_vk_dispatch_pipeline(ggml_backend_vk_context* ctx, vk_context& subctx, vk_pipeline& pipeline, std::initializer_list<vk::DescriptorBufferInfo> const& descriptor_buffer_infos, const T &push_constants, std::array<uint32_t, 3> elements) {
+    if (vk_diag_skip_pipeline(pipeline->name)) {
+        return;
+    }
     const uint32_t wg0 = CEIL_DIV(elements[0], pipeline->wg_denoms[0]);
     const uint32_t wg1 = CEIL_DIV(elements[1], pipeline->wg_denoms[1]);
     const uint32_t wg2 = CEIL_DIV(elements[2], pipeline->wg_denoms[2]);
