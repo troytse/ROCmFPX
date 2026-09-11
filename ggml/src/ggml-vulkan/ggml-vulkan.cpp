@@ -4423,7 +4423,11 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
         } else if (device->vendor_id == VK_VENDOR_ID_AMD && device->coopmat_support && device->driver_id != vk::DriverId::eAmdProprietary) {
             // This is intentionally using tx_m values, slight performance increase
             l_warptile = { 256, 128, 128, 16, mm_warp_8, 64, 2, tm_m, tn_m, tk_m, mm_warp_8 };
-            l_warptile_mmq = l_warptile_mmq_int = { 256, 128, 128, 32, mm_warp_8, 64, 2, tm_m, tn_m, tk_m, mm_warp_8 };
+            l_warptile_mmq = { 256, 128, 128, 32, mm_warp_8, 64, 2, tm_m, tn_m, tk_m, mm_warp_8 };
+            // mul_mmq.comp is the integer dot shader: TM/TN are its per-thread tile, and it
+            // needs WNITER = (WM*WN)/(WARP*TM*TN*WMITER) >= 1. The coopmat sizes would make
+            // WNITER 0 and skip the accumulate and store loops, so keep the DP4A tile here.
+            l_warptile_mmq_int = { 256, 128, 128, 32, mm_warp_8, 64, 2, 4, 4, 1, mm_warp_8 };
             l_warptile_mmq_int_k = { 256, 128, 128, 32, mm_warp_16, 64, 1, 4, 2, 1, mm_warp_16 };
         } else if (device->vendor_id == VK_VENDOR_ID_INTEL && device->coopmat_support) {
             // Xe2/Xe3 with coopmat enabled - warptile performance tuning
