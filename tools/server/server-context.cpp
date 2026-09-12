@@ -296,7 +296,12 @@ struct server_slot {
 
     server_prompt prompt;
 
-    bool prompt_save(server_prompt_cache & prompt_cache) const {
+    // N6: tokens the client itself sent for the task running on this slot. The
+    // slot grows past this with a generation prompt and generated text, none of
+    // which is re-rendered by the next request, so only this much is parkable.
+    int32_t n_client_tokens = -1;
+
+    bool prompt_save(server_prompt_cache & prompt_cache, int32_t n_tokens_max = -1) const {
         if (prompt.tokens.size() == 0) {
             return false;
         }
@@ -309,7 +314,17 @@ struct server_slot {
         SRV_TRC(" - saving prompt with length %d, total state size = %.3f MiB (draft: %.3f MiB)\n",
                 (int) prompt.tokens.size(), cur_size / (1024.0 * 1024.0), cur_size_dft / (1024.0 * 1024.0));
 
-        auto * cur = prompt_cache.alloc(prompt, cur_size_tgt, cur_size_dft, id);
+        server_prompt prompt_parked = {
+            /*.tokens      =*/ prompt.tokens.clone(),
+            /*.checkpoints =*/ prompt.checkpoints,
+        };
+
+        // do not trim into a media chunk: keep_first only counts text tokens
+        if (n_tokens_max > 0 && !prompt.tokens.has_mtmd && (size_t) n_tokens_max < prompt_parked.tokens.size()) {
+            prompt_parked.tokens.keep_first(n_tokens_max);
+        }
+
+        auto * cur = prompt_cache.alloc(prompt_parked, cur_size_tgt, cur_size_dft, id);
         if (cur == nullptr) {
             return false;
         }
@@ -2512,7 +2527,15 @@ private:
                             if (!slot.is_processing()) {
                                 SLT_TRC(slot, "%s", "saving idle slot to prompt cache\n");
 
-                                if (slot.prompt_save(*prompt_cache)) {
+                                // park one token below what the client sent: the last
+                                // token the model saw before generating is rendered into
+                                // the prompt but not re-sent by the next request, so
+                                // requiring it to come back would never match
+                                const int32_t n_park = slot.n_client_tokens > 1
+                                    ? slot.n_client_tokens - 1
+                                    : -1;
+
+                                if (slot.prompt_save(*prompt_cache, n_park)) {
                                     SLT_DBG(slot, "%s", "__TEST_TAG_CACHE_IDLE_SLOT__\n");
                                     prompt_cache->update();
                                 }
@@ -3933,6 +3956,11 @@ private:
 
                 // prompt evaluated for next-token prediction
                 slot.state = SLOT_STATE_GENERATING;
+
+                slot.n_client_tokens = (int32_t) slot.task->n_tokens();
+
+                SLT_TRC(slot, "generation begins: clients=%d slot=%d\n",
+                        (int) slot.n_client_tokens, (int) slot.prompt.n_tokens());
 
                 if (slot.can_speculate()) {
                     common_speculative_begin(spec.get(), slot.id, slot.prompt.tokens.get_text_tokens());

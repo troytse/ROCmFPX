@@ -631,7 +631,7 @@ struct server_prompt_cache {
 
     server_prompt_cache_state * alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft, int32_t id_slot);
 
-    // find the parked state that is fully re-sent by tokens_new (identity match)
+    // find the parked state that the request fully re-sends
     server_prompt_cache_state * find_best_identity(const server_tokens & tokens_new);
 
     bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot);

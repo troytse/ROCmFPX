@@ -1795,7 +1795,10 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
     return &states.back();
 }
 
-// find the parked state that the request fully re-sends (identity match)
+// find the parked state that the request fully re-sends. A state carrying tokens
+// the request does not re-send (generated text, a generation prompt) has a KV
+// tail that cannot be validated or dropped here, so such a state is refused
+// rather than reused in part.
 std::list<server_prompt_cache_state>::iterator server_prompt_cache::find_best_identity_it(const server_tokens & tokens_new) {
     auto it_best = states.end();
     size_t best_len = 0;
@@ -1803,8 +1806,7 @@ std::list<server_prompt_cache_state>::iterator server_prompt_cache::find_best_id
     for (auto it = states.begin(); it != states.end(); ++it) {
         const size_t lcp_len = it->prompt.tokens.get_common_prefix(tokens_new);
 
-        // reuse a state only if the request fully re-sends it; a shared system
-        // prefix alone belongs to a different conversation
+        // the request must re-send every token of the state
         if (lcp_len != it->prompt.tokens.size()) {
             continue;
         }
