@@ -7258,10 +7258,21 @@ static vk_device ggml_vk_get_device(size_t idx) {
                 vkGetDeviceProcAddr(device->device, "vkGetDeviceFaultInfoEXT");
         }
 
-        const char * fp4_coopmat_env = getenv("GGML_VK_ROCMFP4_COOPMAT");
-        if (fp4_coopmat_env && strcmp(fp4_coopmat_env, "1") == 0) {
-            GGML_LOG_INFO("ggml_vulkan: %s ROCmFP4 CM1 request: %s\n", device->name.c_str(),
-                          ggml_vk_rocmfp4_coopmat_enabled(device) ? "enabled (experimental, F32 accumulation)" : "scalar fallback (build or device unsupported)");
+        // This switch is the only thing that turns the ROCmFP4 CM1/MMQ pipelines on. Without it the
+        // backend silently registers ROCmFP4's own scalar f32 fallback, which costs roughly an order of
+        // magnitude on prompt processing, and nothing in the log says so. Warn whenever the requested
+        // state is not "enabled", including the case where the variable is absent.
+        {
+            const bool fp4_enabled = ggml_vk_rocmfp4_coopmat_enabled(device);
+            const char * fp4_env = getenv("GGML_VK_ROCMFP4_COOPMAT");
+            if (fp4_enabled) {
+                GGML_LOG_INFO("ggml_vulkan: %s ROCmFP4 CM1/MMQ enabled (GGML_VK_ROCMFP4_COOPMAT=1)\n",
+                        device->name.c_str());
+            } else {
+                GGML_LOG_WARN("ggml_vulkan: %s ROCmFP4 falling back to the scalar f32 pipeline: "
+                        "GGML_VK_ROCMFP4_COOPMAT is %s (expected 1). Prompt processing will be much slower.\n",
+                        device->name.c_str(), fp4_env ? "not set to 1" : "unset");
+            }
         }
 
         // Queues
